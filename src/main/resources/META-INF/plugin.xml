@@ -1,0 +1,42 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>io.github.weihubeats.enum-generate</id>
+    <name>Enum-generate</name>
+    <version>1.0.0</version>
+
+
+    <vendor email = "weihu@apache.org" url="https://weihubeats.github.io">weihubeats</vendor>
+
+    <description><![CDATA[
+      <h1>Enum Generator</h1>
+      <p>A plugin to generate Java enum classes from a class field's Javadoc comments.</p>
+      <br/>
+      <h2>Features:</h2>
+      <ul>
+        <li>Right-click on a field to generate an enum.</li>
+        <li>Automatically parses "code-description" pairs from Javadoc.</li>
+        <li>Generates a complete enum file with helper methods.</li>
+      </ul>
+    ]]></description>
+
+    <depends>com.intellij.java</depends>
+
+
+
+    <extensions defaultExtensionNs="com.intellij">
+
+    </extensions>
+
+    <actions>
+        <group id="GenerateEnum.EditorPopupMenu" text="Generate Enum" popup="true">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            <action id="io.github.weihubeats.enumgenerate.GenerateEnumAction"
+                    class="io.github.weihubeats.enumgenerate.GenerateEnumAction"
+                    text="Generate Enum from Field"
+                    description="Generates a Java enum class based on the selected field's Javadoc.">
+            </action>
+        </group>
+    </actions>
+    
+</idea-plugin>
