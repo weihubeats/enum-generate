@@ -6,7 +6,7 @@
     <version>1.0.0</version>
 
 
-    <vendor email = "weihu@apache.org" url="https://weihubeats.github.io">weihubeats</vendor>
+    <vendor email="weihu@apache.org" url="https://weihubeats.github.io">weihubeats</vendor>
 
     <description><![CDATA[
       <h1>Enum Generator</h1>
@@ -23,20 +23,17 @@
     <depends>com.intellij.java</depends>
 
 
-
     <extensions defaultExtensionNs="com.intellij">
 
     </extensions>
 
     <actions>
-        <group id="GenerateEnum.EditorPopupMenu" text="Generate Enum" popup="true">
+        <action id="io.github.weihubeats.enumgenerate.GenerateEnumAction"
+                class="io.github.weihubeats.enumgenerate.GenerateEnumAction"
+                text="Generate Enum from Field"
+                description="Generates a Java enum class based on the selected field's Javadoc.">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
-            <action id="io.github.weihubeats.enumgenerate.GenerateEnumAction"
-                    class="io.github.weihubeats.enumgenerate.GenerateEnumAction"
-                    text="Generate Enum from Field"
-                    description="Generates a Java enum class based on the selected field's Javadoc.">
-            </action>
-        </group>
+        </action>
     </actions>
-    
+
 </idea-plugin>

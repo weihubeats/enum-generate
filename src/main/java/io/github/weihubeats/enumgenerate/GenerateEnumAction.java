@@ -68,13 +68,21 @@ public class GenerateEnumAction extends AnAction {
 
     /**
      * 解析 Javadoc 注释，提取枚举常量信息
-     *
+     * 格式一: 0-待处理
+     * 格式二: 1:处理中
+     * 格式三: 2：已完成
+     * 格式四: 3 = 失败
+     * 格式五(带空格): 4 - 已归档
+     * 也可以混用，用逗号或换行分隔
+     * 5:已取消, 6-已删除
      * @param javadoc Javadoc 字符串
      * @return 格式化后的枚举常量字符串
      */
     private String parseJavadoc(String javadoc) {
-        // 正则表达式匹配 "数字-描述" 格式
-        Pattern pattern = Pattern.compile("(\\d+)-([^,\\n]*)");
+        // 新的正则表达式，更强大、更灵活
+        // \s* 表示匹配零个或多个空格
+        // [-:：=] 表示匹配 - 或 : 或 ：(中文冒号) 或 =
+        Pattern pattern = Pattern.compile("(\\d+)\\s*[-:：=]\\s*([^,\\n]*)");
         Matcher matcher = pattern.matcher(javadoc);
         StringBuilder constantsBuilder = new StringBuilder();
         int count = 0;
@@ -105,23 +113,31 @@ public class GenerateEnumAction extends AnAction {
      * @return 完整的 Java 代码
      */
     private String generateEnumCode(String enumName, String enumConstants) {
-        return "import lombok.AllArgsConstructor;\n" +
+        return "import lombok.RequiredArgsConstructor;\n" +
             "import lombok.Getter;\n\n" +
             "import java.util.Arrays;\n" +
             "import java.util.Map;\n" +
+            "import java.util.Optional;\n" + 
             "import java.util.stream.Collectors;\n\n" +
             "@Getter\n" +
-            "@AllArgsConstructor\n" +
+            "@RequiredArgsConstructor\n" +
             "public enum " + enumName + " {\n\n" +
             enumConstants + "\n\n" +
             "    private final int code;\n" +
             "    private final String description;\n\n" +
-            "    public static final Map<Integer, " + enumName + "> ENUM_MAP = Arrays.stream(" + enumName + ".values()).collect(Collectors.toMap(" + enumName + "::getCode, e -> e));\n\n" +
+            "    public static final Map<Integer, " + enumName + "> ENUM_MAP = Arrays.stream(" + enumName + ".values())\n" +
+            "            .collect(Collectors.toMap(" + enumName + "::getCode, e -> e));\n\n" +
             "    public static " + enumName + " parse(int type) {\n" +
             "        return ENUM_MAP.get(type);\n" +
+            "    }\n\n" +
+
+            "    public static Optional<" + enumName + "> parseOptional(int type) {\n" +
+            "        return Optional.ofNullable(ENUM_MAP.get(type));\n" +
             "    }\n" +
+
             "}\n";
     }
+
 
     /**
      * 创建并写入枚举文件
