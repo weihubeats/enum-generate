@@ -38,7 +38,8 @@ public class CampaignDO {
 
 将鼠标光标**精确地放在属性名上**（例如 `status`），然后右键点击，在弹出的菜单中选择 **"Generate Enum"**。
 
-![操作演示](https://i.imgur.com/example.gif "操作演示")
+![use-effect.gif](doc/use-effect.gif)
+
 
 #### 3. 查看生成结果
 
