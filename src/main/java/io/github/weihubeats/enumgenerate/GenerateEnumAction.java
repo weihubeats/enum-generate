@@ -1,6 +1,8 @@
 package io.github.weihubeats.enumgenerate;
 
 import com.intellij.ide.highlighter.JavaFileType;
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
@@ -13,12 +15,35 @@ import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiField;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.PsiFileFactory;
-import java.util.Objects;
+import com.intellij.psi.codeStyle.CodeStyleManager;
+import com.intellij.psi.codeStyle.JavaCodeStyleManager;
+import com.intellij.psi.javadoc.PsiDocComment;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.StringJoiner;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import org.jetbrains.annotations.NotNull;
 
+/**
+ * 根据字段 Javadoc 解析枚举常量并生成枚举类。
+ * 支持格式(可混用)：0-待处理, 1:处理中, 2：完成, 3 = 失败, 4 - 已归档
+ */
 public class GenerateEnumAction extends AnAction {
+
+    private static final Pattern ENTRY_PATTERN = Pattern.compile("(\\d+)\\s*[-:=：]\\s*(.+)");
+
+    private static final Pattern TAIL_SUFFIX_PATTERN = Pattern.compile("(DO|DTO|VO|PO|POJO|Entity)$");
+
+    private static final String NOTIFICATION_ID = "Enum Generator";
+
+
+
 
     @Override
     public void update(@NotNull AnActionEvent e) {
@@ -26,150 +51,211 @@ public class GenerateEnumAction extends AnAction {
         PsiElement psiElement = e.getData(CommonDataKeys.PSI_ELEMENT);
         // 只有当选中的元素是 PsiField (类属性)时，才显示此 Action
         e.getPresentation().setEnabledAndVisible(psiElement instanceof PsiField);
+
     }
 
     @Override
     public void actionPerformed(@NotNull AnActionEvent e) {
-        // 获取当前上下文信息
         Project project = e.getProject();
         PsiElement psiElement = e.getData(CommonDataKeys.PSI_ELEMENT);
-
         if (project == null || !(psiElement instanceof PsiField)) {
+            notify(project, "未选中字段。", NotificationType.WARNING);
             return;
         }
 
-        PsiField selectedField = (PsiField) psiElement;
-        PsiClass containingClass = selectedField.getContainingClass();
-        if (containingClass == null) {
+        PsiField field = (PsiField) psiElement;
+        PsiClass psiClass = field.getContainingClass();
+        if (psiClass == null) {
+            notify(project, "无法获取包含类。", NotificationType.ERROR);
             return;
         }
 
-        // 1. 解析 Javadoc
-        String javadocComment = Objects.requireNonNull(selectedField.getDocComment()).getText();
-        String enumConstantsString = parseJavadoc(javadocComment);
-        if (enumConstantsString.isEmpty()) {
-            // 可以添加一个提示，告知用户 Javadoc 格式不正确
+        PsiDocComment doc = field.getDocComment();
+        if (doc == null) {
+            notify(project, "该字段没有 Javadoc，无法解析枚举。", NotificationType.WARNING);
             return;
         }
 
-        // 2. 生成枚举类名
-        String baseClassName = containingClass.getName().replaceAll("(DO|DTO|VO)$", "");
-        String fieldName = selectedField.getName();
-        String capitalizedFieldName = fieldName.substring(0, 1).toUpperCase() + fieldName.substring(1);
-        String enumName = baseClassName + capitalizedFieldName + "Enum";
+        String rawJavadoc = doc.getText();
+        List<EnumEntry> entries = parseEnumEntries(rawJavadoc);
+        if (entries.isEmpty()) {
+            notify(project, "Javadoc 中未解析到合法的枚举项。", NotificationType.WARNING);
+            return;
+        }
 
-        // 3. 生成枚举类代码
-        String enumCode = generateEnumCode(enumName, enumConstantsString);
+        // 生成类名
+        String className = psiClass.getName() == null ? "Unknown" : psiClass.getName();
+        String baseName = TAIL_SUFFIX_PATTERN.matcher(className).replaceAll("");
+        String fieldName = field.getName();
+        String enumClassName = buildEnumClassName(baseName, fieldName, psiClass);
+        // 生成包名
+        String packageName = getPackageName(psiClass);
 
-        // 4. 在同一个目录下创建文件并写入代码
-        PsiDirectory containingDirectory = containingClass.getContainingFile().getContainingDirectory();
-        createEnumFile(project, containingDirectory, enumName, enumCode);
+        // 生成代码
+        String enumCode = buildEnumSource(packageName, enumClassName, entries);
+
+        // 写文件
+        PsiDirectory dir = psiClass.getContainingFile().getContainingDirectory();
+        writeEnumFile(project, dir, enumClassName, enumCode);
     }
 
-    /**
-     * 解析 Javadoc 注释，提取枚举常量信息
-     * 格式一: 0-待处理
-     * 格式二: 1:处理中
-     * 格式三: 2：已完成
-     * 格式四: 3 = 失败
-     * 格式五(带空格): 4 - 已归档
-     * 也可以混用，用逗号或换行分隔
-     * 5:已取消, 6-已删除
-     * @param javadoc Javadoc 字符串
-     * @return 格式化后的枚举常量字符串
-     */
-    private String parseJavadoc(String javadoc) {
-        // 新的正则表达式，更强大、更灵活
-        // \s* 表示匹配零个或多个空格
-        // [-:：=] 表示匹配 - 或 : 或 ：(中文冒号) 或 =
-        Pattern pattern = Pattern.compile("(\\d+)\\s*[-:：=]\\s*([^,\\n]*)");
-        Matcher matcher = pattern.matcher(javadoc);
-        StringBuilder constantsBuilder = new StringBuilder();
-        int count = 0;
-        char enumConstName = 'A';
+    private String buildEnumClassName(String baseName, String fieldName, PsiClass contextClass) {
+        String capitalizedField = fieldName.isEmpty()
+            ? "Field"
+            : Character.toUpperCase(fieldName.charAt(0)) + fieldName.substring(1);
+        return baseName + capitalizedField + "Enum";
+    }
 
-        while (matcher.find()) {
-            if (count > 0) {
-                constantsBuilder.append(",\n\n");
+    private String getPackageName(PsiClass psiClass) {
+        String qName = psiClass.getQualifiedName();
+        if (qName == null || !qName.contains(".")) {
+            return "";
+        }
+        int lastDot = qName.lastIndexOf('.');
+        return qName.substring(0, lastDot);
+    }
+
+    private List<EnumEntry> parseEnumEntries(String doc) {
+        // 去除 /** */ 和行首 *
+        String cleaned = Arrays.stream(
+                doc.replaceAll("^/\\*\\*", "")
+                    .replaceAll("\\*/$", "")
+                    .split("\\R"))
+            .map(line -> line.replaceFirst("^\\s*\\*", "").trim())
+            .collect(Collectors.joining("\n"));
+
+        // 按中英文逗号 / 换行切分
+        String[] segments = cleaned.split("[,，\\n]+");
+        List<EnumEntry> entries = new ArrayList<>();
+        Set<Integer> usedCodes = new HashSet<>();
+
+        for (String seg : segments) {
+            String trimmed = seg.trim();
+            if (trimmed.isEmpty()) continue;
+            Matcher m = ENTRY_PATTERN.matcher(trimmed);
+            if (!m.matches()) continue;
+            int code;
+            try {
+                code = Integer.parseInt(m.group(1));
+            } catch (NumberFormatException ex) {
+                continue;
             }
-            String code = matcher.group(1).trim();
-            String description = matcher.group(2).trim();
-            // 使用 A, B, C... 作为枚举名
-            constantsBuilder.append("    ").append(enumConstName++).append("(").append(code).append(", \"").append(description).append("\")");
-            count++;
+            if (!usedCodes.add(code)) {
+                // 重复 code，跳过或可追加策略
+                continue;
+            }
+            String desc = m.group(2).trim();
+            // 去掉尾部可能的句号/分号
+            desc = desc.replaceAll("[;。．.]+$", "").trim();
+            String enumName = deriveEnumConstantName(desc, code, entries.size());
+            entries.add(new EnumEntry(enumName, code, desc));
         }
-        if(count > 0) {
-            constantsBuilder.append(";");
-        }
-
-        return constantsBuilder.toString();
+        return entries;
     }
 
-    /**
-     * 生成完整的枚举类代码
-     *
-     * @param enumName          枚举类名
-     * @param enumConstants     枚举常量字符串
-     * @return 完整的 Java 代码
-     */
-    private String generateEnumCode(String enumName, String enumConstants) {
-        return "import lombok.RequiredArgsConstructor;\n" +
-            "import lombok.Getter;\n\n" +
-            "import java.util.Arrays;\n" +
-            "import java.util.Map;\n" +
-            "import java.util.Optional;\n" + 
-            "import java.util.stream.Collectors;\n\n" +
+    private String deriveEnumConstantName(String description, int code, int index) {
+        // 只保留字母数字，其他转下划线
+        String base = description.replaceAll("[^a-zA-Z0-9]+", "_");
+        base = base.replaceAll("_+", "_");
+        base = base.replaceAll("^_|_$", "");
+        if (base.isEmpty()) {
+            base = "C" + code;
+        }
+        if (!Character.isLetter(base.charAt(0))) {
+            base = "C_" + base;
+        }
+        base = base.toUpperCase(Locale.ROOT);
+
+        // 避免重复
+        //（此处由调用方确保唯一；这里简单返回）
+        return base;
+    }
+
+    private String buildEnumSource(String packageName, String enumName, List<EnumEntry> entries) {
+        StringJoiner constantsJoiner = new StringJoiner(",\n");
+        for (EnumEntry entry : entries) {
+            constantsJoiner.add("    " + entry.name + "(" + entry.code + ", \"" + escape(entry.description) + "\")");
+        }
+
+        String pkgLine = packageName.isEmpty() ? "" : "package " + packageName + ";\n\n";
+
+        return pkgLine +
+            "import lombok.Getter;\n" +
+            "import lombok.RequiredArgsConstructor;\n" +
+            "import java.util.*;\n" +
+            "\n" +
             "@Getter\n" +
             "@RequiredArgsConstructor\n" +
             "public enum " + enumName + " {\n\n" +
-            enumConstants + "\n\n" +
-            "    private final int code;\n" +
+            constantsJoiner + ";\n\n" +
+            "    private final int code;\n\n" +
             "    private final String description;\n\n" +
-            "    public static final Map<Integer, " + enumName + "> ENUM_MAP = Arrays.stream(" + enumName + ".values())\n" +
-            "            .collect(Collectors.toMap(" + enumName + "::getCode, e -> e));\n\n" +
-            "    public static " + enumName + " parse(int type) {\n" +
-            "        return ENUM_MAP.get(type);\n" +
+            "    private static final Map<Integer, " + enumName + "> ENUM_MAP;\n" +
+            "    static {\n" +
+            "        Map<Integer, " + enumName + "> m = new HashMap<>();\n" +
+            "        for (" + enumName + " e : values()) {\n" +
+            "            m.put(e.code, e);\n" +
+            "        }\n" +
+            "        ENUM_MAP = Collections.unmodifiableMap(m);\n" +
             "    }\n\n" +
-
-            "    public static Optional<" + enumName + "> parseOptional(int type) {\n" +
-            "        return Optional.ofNullable(ENUM_MAP.get(type));\n" +
+            "    public static Optional<" + enumName + "> find(int code) {\n" +
+            "        return Optional.ofNullable(ENUM_MAP.get(code));\n" +
+            "    }\n\n" +
+            "    public static " + enumName + " require(int code) {\n" +
+            "        " + enumName + " e = ENUM_MAP.get(code);\n" +
+            "        if (e == null) throw new IllegalArgumentException(\"Unknown code: \" + code);\n" +
+            "        return e;\n" +
             "    }\n" +
-
             "}\n";
     }
 
+    private String escape(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
 
-    /**
-     * 创建并写入枚举文件
-     *
-     * @param project     当前项目
-     * @param directory   目标目录
-     * @param enumName    枚举类名
-     * @param enumCode    枚举代码
-     */
-    private void createEnumFile(Project project, PsiDirectory directory, String enumName, String enumCode) {
-        // 使用 WriteCommandAction 来执行文件写入操作，确保操作是可撤销的
+    private void writeEnumFile(Project project, PsiDirectory dir, String enumName, String source) {
         WriteCommandAction.runWriteCommandAction(project, () -> {
-            try {
-                String fileName = enumName + ".java";
-                // 检查文件是否已存在
-                if (directory.findFile(fileName) != null) {
-                    // 文件已存在，可以提示用户或直接覆盖
-                    System.out.println("File " + fileName + " already exists.");
-                    return;
-                }
-                PsiFileFactory fileFactory = PsiFileFactory.getInstance(project);
-                PsiFile javaFile = fileFactory.createFileFromText(fileName, JavaFileType.INSTANCE, enumCode);
-                directory.add(javaFile);
-                System.out.println("Successfully generated " + fileName);
-            } catch (Exception ex) {
-                ex.printStackTrace();
+            String fileName = enumName + ".java";
+            if (dir.findFile(fileName) != null) {
+                notify(project, "文件已存在: " + fileName, NotificationType.WARNING);
+                return;
             }
+            PsiFileFactory factory = PsiFileFactory.getInstance(project);
+            PsiFile file = factory.createFileFromText(fileName, JavaFileType.INSTANCE, source);
+
+            PsiElement added = dir.add(file);
+
+            // 格式化 + 优化 import
+            CodeStyleManager.getInstance(project).reformat(added);
+            JavaCodeStyleManager.getInstance(project).optimizeImports((PsiFile) added);
+
+            notify(project, "已生成枚举: " + fileName, NotificationType.INFORMATION);
         });
     }
+
+    private void notify(Project project, String message, NotificationType type) {
+        if (project == null) return;
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup(NOTIFICATION_ID)
+            .createNotification(message, type)
+            .notify(project);
+    }
+    
+    
 
     @Override
     public @NotNull ActionUpdateThread getActionUpdateThread() {
         return ActionUpdateThread.BGT;
+    }
+
+    private static class EnumEntry {
+        final String name;
+        final int code;
+        final String description;
+        EnumEntry(String name, int code, String description) {
+            this.name = name;
+            this.code = code;
+            this.description = description;
+        }
     }
 }
